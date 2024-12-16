@@ -6,6 +6,7 @@ import com.wanda.repository.VideoRepository;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -76,28 +78,68 @@ public class VideoService {
     }
 
 
-    public ServeVideo serveVideo(String videoId) {
+    public ServeVideo serveVideo(String videoId, String range) {
         Optional<Video> existingVideo = this.videoRepository.findById(videoId);
 
-        if(existingVideo.isPresent()) {
-            Video video = existingVideo.get();
-            String filePath = video.getFilePath();
-            String contentType = video.getContentType();
 
-            if(contentType.isEmpty()){
-                contentType = "video/mp4";
+        if (existingVideo.isPresent()) {
+            System.out.println("range " + range);
+            Video video = existingVideo.get();
+            String strFilePath = video.getFilePath();
+            String contentType = video.getContentType();
+            Path filePath = Paths.get(strFilePath);
+
+            if (!Files.exists(filePath)) {
+                // Handle missing file scenario
+                System.out.println("file not found");
+                return null;
             }
 
-            FileSystemResource resource = new FileSystemResource(filePath);
-
+            long fileLength = filePath.toFile().length();
+            contentType = (contentType == null || contentType.isEmpty()) ? "application/octet-stream" : contentType;
 
             ServeVideo serveVideo = new ServeVideo();
-            serveVideo.setResource(resource);
             serveVideo.setContentType(contentType);
+
+            if (range == null || !range.startsWith("bytes=")) {
+                FileSystemResource resource = new FileSystemResource(filePath);
+                serveVideo.setResource(resource);
+                return serveVideo;
+            }
+
+            range = range.substring("bytes=".length());
+            String[] browserRanges = range.split("-");
+            long rangeStart = Long.parseLong(browserRanges[0]);
+            long rangeEnd = fileLength;
+
+            System.out.println("bytes=" + rangeStart + "-" + rangeEnd + "/" + fileLength);
+            long contentLength = rangeEnd - rangeStart + 1;
+            HttpHeaders headers = new HttpHeaders();
+            headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + rangeStart + "-" + rangeEnd + "/" + fileLength);
+            headers.setContentLength(contentLength);
+            headers.add(HttpHeaders.CONTENT_TYPE, contentType);
+            headers.add(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+            headers.add(HttpHeaders.PRAGMA, "no-cache");
+            headers.add(HttpHeaders.EXPIRES, "0");
+            headers.add("X-Content-Type-Options", "nosniff");
+
+            try (InputStream inputStream = Files.newInputStream(filePath)) {
+                inputStream.skip(rangeStart);
+                serveVideo.setInputStream(inputStream);
+                serveVideo.setHeaders(headers);
+            } catch (IOException e) {
+                System.out.println("inside inputstreram exception");
+                e.printStackTrace();
+                return null;
+            }
+
             return serveVideo;
         }
 
+        // Video not present
+        System.out.println("video not found");
         return null;
     }
+
 
 }
